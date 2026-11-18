@@ -44,12 +44,15 @@ input[type=range]{flex:1;accent-color:var(--acc)}
 <main id="stage">
   <canvas id="cv"></canvas>
   <div id="empty">
-    <p>Pick a photo or take one</p>
+    <p>Pick a photo or video (up to 1 min)</p>
     <div class="row"><button id="open2" class="pri">Photo</button><button id="cam" class="pri">Camera</button></div>
     <p class="hint">Everything stays on this device.</p>
   </div>
 </main>
 
+<div id="vbar" class="row" style="display:none;padding:6px 12px;background:var(--panel)">
+  <button id="ptoggle">▶</button><input id="seek" type="range" min="0" max="60" step="0.01" value="0">
+</div>
 <div id="selbar" class="row" style="display:none">
   <span>Size</span><input id="sz" type="range" min=".2" max="5" step=".01">
   <button id="del">Delete</button><button id="done">Done</button>
@@ -85,7 +88,7 @@ input[type=range]{flex:1;accent-color:var(--acc)}
   <button data-tool="filter">Filter</button>
 </nav>
 
-<input id="fBase" type="file" accept="image/*" hidden>
+<input id="fBase" type="file" accept="image/*,video/*" hidden>
 <input id="fCam" type="file" accept="image/*" capture="environment" hidden>
 <input id="fSticker" type="file" accept="image/*" hidden>
 
@@ -96,6 +99,7 @@ let base=null,W=0,H=0,layers=[],sel=null,hist=[],tool='text',drawing=false,cur=n
 const filt={b:100,c:100,s:100};
 const st={color:'#ffffff',font:'Impact',bg:false,dc:'#ffdd00',dw:0.008};
 const ptrs=new Map();
+let vid=null,raf=0,recording=false;
 const COLORS=['#ffffff','#000000','#ffdd00','#ff3b6b','#3bd0ff','#7cff6b','#b26bff'];
 const EMOJIS='😂😍🔥💯😎🥹❤️✨🎉😭🤣👀🙌💀🫶🌈⭐🍕🐶🌸👑💫😜🥳👻🎃🌙🍀💖🤩🙃😈🦄🎮🚀💸🏆🫠😴🐸'.match(/\p{Extended_Pictographic}\uFE0F?(\u200D\p{Extended_Pictographic}\uFE0F?)*/gu);
 
@@ -106,6 +110,64 @@ function setBase(im){
   W=cv.width=Math.round(im.naturalWidth*s);H=cv.height=Math.round(im.naturalHeight*s);
   layers=[];hist=[];sel=null;$('empty').style.display='none';$('save').disabled=false;
   selUI();render();
+}
+function stopVid(){
+  if(vid){vid.pause();URL.revokeObjectURL(vid.src);vid=null;}
+  cancelAnimationFrame(raf);$('vbar').style.display='none';
+}
+function loadVideo(f){
+  const v=document.createElement('video');
+  v.src=URL.createObjectURL(f);v.playsInline=true;v.preload='auto';
+  v.onloadedmetadata=()=>{
+    if(v.duration>61){alert('Videos can be up to 1 minute.');URL.revokeObjectURL(v.src);return;}
+    const s=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight));
+    W=cv.width=Math.round(v.videoWidth*s);H=cv.height=Math.round(v.videoHeight*s);
+    base=v;vid=v;layers=[];hist=[];sel=null;
+    $('empty').style.display='none';$('save').disabled=false;$('save').textContent='Export';
+    $('vbar').style.display='flex';$('seek').max=v.duration;$('seek').value=0;
+    v.currentTime=0.01;selUI();render();loop();
+  };
+}
+function loop(){
+  if(!vid)return;
+  $('seek').value=vid.currentTime;$('ptoggle').textContent=vid.paused?'▶':'❚❚';
+  render();raf=requestAnimationFrame(loop);
+}
+$('ptoggle').onclick=()=>{if(vid)vid.paused?vid.play():vid.pause();};
+$('seek').oninput=e=>{if(vid)vid.currentTime=+e.target.value;};
+async function shareOrDownload(blob,name){
+  const file=new File([blob],name,{type:blob.type});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{await navigator.share({files:[file]});return;}
+    catch(err){if(err.name==='AbortError')return;}
+  }
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+}
+async function exportVideo(){
+  if(recording||!vid)return;
+  recording=true;const btn=$('save');btn.disabled=true;btn.textContent='Recording…';
+  sel=null;selUI();
+  try{
+    const stream=cv.captureStream(30);
+    const aStream=vid.captureStream?vid.captureStream():null;
+    if(aStream)aStream.getAudioTracks().forEach(t=>stream.addTrack(t));
+    const type=['video/mp4','video/webm;codecs=vp9,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+    const rec=new MediaRecorder(stream,type?{mimeType:type}:undefined);
+    const chunks=[];
+    rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+    const stopped=new Promise(r=>rec.onstop=r);
+    vid.pause();vid.currentTime=0;
+    rec.start(250);
+    await vid.play();
+    await new Promise(r=>{vid.onended=r;});
+    await new Promise(r=>setTimeout(r,300));
+    rec.stop();await stopped;
+    const mt=rec.mimeType||type||'video/webm';
+    const ext=mt.includes('mp4')?'mp4':'webm';
+    await shareOrDownload(new Blob(chunks,{type:mt}),`snap.${ext}`);
+  }catch(err){alert('Export failed: '+err.message);}
+  finally{recording=false;btn.disabled=false;btn.textContent='Export';}
 }
 function pt(e){const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height};}
 function dpx(a,b){return Math.hypot((a.x-b.x)*W,(a.y-b.y)*H);}
@@ -255,7 +317,10 @@ $('fSticker').onchange=e=>{
 };
 
 // photo open
-const openBase=f=>{if(f)loadFile(f,setBase);};
+const openBase=f=>{
+  if(!f)return;stopVid();$('save').textContent='Save';
+  if(f.type.startsWith('video'))loadVideo(f);else loadFile(f,setBase);
+};
 $('open').onclick=$('open2').onclick=()=>$('fBase').click();
 $('cam').onclick=()=>$('fCam').click();
 $('fBase').onchange=e=>{openBase(e.target.files[0]);e.target.value='';};
@@ -281,6 +346,7 @@ Object.entries(PRESETS).forEach(([name,[b,c,s]])=>{
 
 // save / share
 $('save').onclick=()=>{
+  if(vid){exportVideo();return;}
   if(!base)return;
   sel=null;selUI();render(true);
   cv.toBlob(async blob=>{
