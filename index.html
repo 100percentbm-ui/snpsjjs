@@ -207,7 +207,8 @@ function drawSel(l){
 function render(noSel){
   if(!base)return;
   ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,W,H);
-  ctx.filter=`brightness(${filt.b}%) contrast(${filt.c}%) saturate(${filt.s}%)`;
+  const neutral=filt.b===100&&filt.c===100&&filt.s===100;
+  if(!neutral)ctx.filter=`brightness(${filt.b}%) contrast(${filt.c}%) saturate(${filt.s}%)`;
   ctx.drawImage(base,0,0,W,H);ctx.filter='none';
   layers.forEach(drawLayer);
   if(!noSel&&sel&&layers.includes(sel))drawSel(sel);
