@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Snap Editor</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0b0d;--panel:#17171b;--acc:#ffdd00;--tx:#f4f4f5;--mut:#8a8a93}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;gap:8px}
+header div{display:flex;gap:6px}
+button{font:inherit;color:var(--tx);background:#2a2a31;border:0;border-radius:10px;padding:9px 12px;touch-action:manipulation;cursor:pointer}
+button:disabled{opacity:.4}
+button.on,button.pri{background:var(--acc);color:#000;font-weight:600}
+#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:6px;position:relative}
+canvas{max-width:100%;max-height:100%;touch-action:none;border-radius:6px;background:#141418}
+#empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--mut)}
+.hint{font-size:12px;color:var(--mut)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#selbar{padding:6px 12px;gap:8px;background:var(--panel)}
+#selbar span{font-size:13px;color:var(--mut)}
+#selbar input{flex:1}
+#panel{background:var(--panel);padding:10px 12px;display:none;flex-direction:column;gap:10px;max-height:34vh;overflow-y:auto}
+.sec{display:none;flex-direction:column;gap:10px}
+input[type=text],select{flex:1;min-width:0;background:#0b0b0d;color:var(--tx);border:1px solid #33333b;border-radius:10px;padding:9px;font:inherit}
+input[type=range]{flex:1;accent-color:var(--acc)}
+.sw{width:28px;height:28px;border-radius:50%;border:2px solid #0000;padding:0}
+.sw.on{border-color:#fff}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}
+.grid button{font-size:24px;padding:4px 0;background:none}
+#tools{display:flex;gap:6px;overflow-x:auto;padding:8px 10px;padding-bottom:calc(8px + env(safe-area-inset-bottom))}
+#tools button{flex:1;min-width:64px}
+</style>
+</head>
+<body>
+<header>
+  <button id="open">Open</button>
+  <strong style="color:var(--acc)">Snap Editor</strong>
+  <div><button id="undo">Undo</button><button id="save" class="pri" disabled>Save</button></div>
+</header>
+
+<main id="stage">
+  <canvas id="cv"></canvas>
+  <div id="empty">
+    <p>Pick a photo or take one</p>
+    <div class="row"><button id="open2" class="pri">Photo</button><button id="cam" class="pri">Camera</button></div>
+    <p class="hint">Everything stays on this device.</p>
+  </div>
+</main>
+
+<div id="selbar" class="row" style="display:none">
+  <span>Size</span><input id="sz" type="range" min=".2" max="5" step=".01">
+  <button id="del">Delete</button><button id="done">Done</button>
+</div>
+
+<div id="panel">
+  <div class="sec" data-t="text">
+    <div class="row"><input id="txt" type="text" placeholder="Type something…"><button id="addt" class="pri">Add</button></div>
+    <div class="row"><div id="sw-t" class="row"></div><select id="font">
+      <option value="Impact">Impact</option><option value="Arial Black">Bold</option>
+      <option value="Georgia">Serif</option><option value="monospace">Mono</option><option value="cursive">Script</option>
+    </select><button id="bgt">Pill</button></div>
+    <div class="hint">Tap a text on the photo to edit it.</div>
+  </div>
+  <div class="sec" data-t="emoji"><div id="emo" class="grid"></div></div>
+  <div class="sec" data-t="draw">
+    <div class="row"><div id="sw-d" class="row"></div><input id="dsz" type="range" min="1" max="6" value="2"></div>
+    <div class="hint">Drag on the photo to draw. Undo removes strokes.</div>
+  </div>
+  <div class="sec" data-t="filter">
+    <div class="row"><span>Brightness</span><input id="fB" type="range" min="50" max="150" value="100"></div>
+    <div class="row"><span>Contrast</span><input id="fC" type="range" min="50" max="150" value="100"></div>
+    <div class="row"><span>Saturation</span><input id="fS" type="range" min="0" max="200" value="100"></div>
+    <div class="row" id="presets"></div>
+  </div>
+</div>
+
+<nav id="tools">
+  <button data-tool="text">Text</button>
+  <button data-tool="emoji">Emoji</button>
+  <button id="sticker">Sticker</button>
+  <button data-tool="draw">Draw</button>
+  <button data-tool="filter">Filter</button>
+</nav>
+
+<input id="fBase" type="file" accept="image/*" hidden>
+<input id="fCam" type="file" accept="image/*" capture="environment" hidden>
+<input id="fSticker" type="file" accept="image/*" hidden>
+
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d');
+let base=null,W=0,H=0,layers=[],sel=null,hist=[],tool='text',drawing=false,cur=null,drag=null;
+const filt={b:100,c:100,s:100};
+const st={color:'#ffffff',font:'Impact',bg:false,dc:'#ffdd00',dw:0.008};
+const ptrs=new Map();
+const COLORS=['#ffffff','#000000','#ffdd00','#ff3b6b','#3bd0ff','#7cff6b','#b26bff'];
+const EMOJIS='😂😍🔥💯😎🥹❤️✨🎉😭🤣👀🙌💀🫶🌈⭐🍕🐶🌸👑💫😜🥳👻🎃🌙🍀💖🤩🙃😈🦄🎮🚀💸🏆🫠😴🐸'.match(/\p{Extended_Pictographic}\uFE0F?(\u200D\p{Extended_Pictographic}\uFE0F?)*/gu);
+
+function snap(){hist.push(layers.map(l=>({...l})));if(hist.length>60)hist.shift();}
+function loadFile(f,cb){const u=URL.createObjectURL(f);const im=new Image();im.onload=()=>{URL.revokeObjectURL(u);cb(im);};im.src=u;}
+function setBase(im){
+  base=im;const s=Math.min(1,1600/Math.max(im.naturalWidth,im.naturalHeight));
+  W=cv.width=Math.round(im.naturalWidth*s);H=cv.height=Math.round(im.naturalHeight*s);
+  layers=[];hist=[];sel=null;$('empty').style.display='none';$('save').disabled=false;
+  selUI();render();
+}
+function pt(e){const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height};}
+function dpx(a,b){return Math.hypot((a.x-b.x)*W,(a.y-b.y)*H);}
+function ang(a,b){return Math.atan2((b.y-a.y)*H,(b.x-a.x)*W);}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+function measure(l){
+  if(l.t==='text'){l.fs=0.09*W;ctx.font=`900 ${l.fs}px ${l.f}`;l.bw=ctx.measureText(l.text).width;l.bh=l.fs*1.2;}
+  else if(l.t==='emoji'){l.fs=0.16*W;l.bw=l.bh=l.fs*1.1;}
+  else if(l.t==='img'){l.bw=0.4*W;l.bh=l.bw*l.img.naturalHeight/l.img.naturalWidth;}
+}
+function drawLayer(l){
+  if(l.t==='stroke'){
+    ctx.save();ctx.strokeStyle=l.c;ctx.lineWidth=l.w*W;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();
+    l.pts.forEach((p,i)=>i?ctx.lineTo(p[0]*W,p[1]*H):ctx.moveTo(p[0]*W,p[1]*H));ctx.stroke();ctx.restore();return;
+  }
+  measure(l);
+  ctx.save();ctx.translate(l.x*W,l.y*H);ctx.rotate(l.r);ctx.scale(l.s,l.s);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  if(l.t==='text'){
+    ctx.font=`900 ${l.fs}px ${l.f}`;
+    if(l.bg){ctx.fillStyle='rgba(0,0,0,.55)';rr(-l.bw/2-l.fs*.3,-l.bh/2,l.bw+l.fs*.6,l.bh,l.fs*.3);ctx.fill();}
+    ctx.fillStyle=l.c;ctx.fillText(l.text,0,0);
+  }else if(l.t==='emoji'){
+    ctx.font=`${l.fs}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;ctx.fillText(l.text,0,0);
+  }else{
+    ctx.drawImage(l.img,-l.bw/2,-l.bh/2,l.bw,l.bh);
+  }
+  ctx.restore();
+}
+function drawSel(l){
+  measure(l);const pad=0.02*W;
+  ctx.save();ctx.translate(l.x*W,l.y*H);ctx.rotate(l.r);ctx.scale(l.s,l.s);
+  ctx.setLineDash([8/l.s,6/l.s]);ctx.lineWidth=2/l.s;ctx.strokeStyle='#ffdd00';
+  ctx.strokeRect(-l.bw/2-pad,-l.bh/2-pad,l.bw+2*pad,l.bh+2*pad);ctx.restore();
+}
+function render(noSel){
+  if(!base)return;
+  ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,W,H);
+  ctx.filter=`brightness(${filt.b}%) contrast(${filt.c}%) saturate(${filt.s}%)`;
+  ctx.drawImage(base,0,0,W,H);ctx.filter='none';
+  layers.forEach(drawLayer);
+  if(!noSel&&sel&&layers.includes(sel))drawSel(sel);
+}
+function hit(p){
+  for(let i=layers.length-1;i>=0;i--){
+    const l=layers[i];if(l.t==='stroke')continue;
+    measure(l);
+    const dx=(p.x-l.x)*W,dy=(p.y-l.y)*H,c=Math.cos(-l.r),s=Math.sin(-l.r);
+    const lx=(dx*c-dy*s)/l.s,ly=(dx*s+dy*c)/l.s,pad=0.02*W/l.s;
+    if(Math.abs(lx)<=l.bw/2+pad&&Math.abs(ly)<=l.bh/2+pad)return l;
+  }
+  return null;
+}
+function selUI(){
+  $('selbar').style.display=sel?'flex':'none';
+  if(sel){$('sz').value=sel.s;if(sel.t==='text')$('txt').value=sel.text;}
+}
+function addLayer(l){if(!base)return;snap();layers.push(l);sel=l;selUI();render();}
+
+// pointer handling
+cv.addEventListener('pointerdown',e=>{
+  if(!base)return;e.preventDefault();cv.setPointerCapture(e.pointerId);
+  const p=pt(e);ptrs.set(e.pointerId,p);
+  if(tool==='draw'){snap();cur={t:'stroke',c:st.dc,w:st.dw,pts:[[p.x,p.y]]};layers.push(cur);drawing=true;render();return;}
+  if(ptrs.size===1){
+    const h=hit(p);
+    if(h){snap();sel=h;drag={k:'move',ox:p.x-h.x,oy:p.y-h.y};}
+    else{sel=null;drag=null;}
+    selUI();render();
+  }else if(ptrs.size===2&&sel){
+    const [a,b]=ptrs.values();drag={k:'pinch',d:dpx(a,b),a0:ang(a,b),s0:sel.s,r0:sel.r};
+  }
+});
+cv.addEventListener('pointermove',e=>{
+  if(!ptrs.has(e.pointerId))return;
+  const p=pt(e);ptrs.set(e.pointerId,p);
+  if(drawing&&cur){cur.pts.push([p.x,p.y]);render();return;}
+  if(!sel||!drag)return;
+  if(drag.k==='move'&&ptrs.size===1){sel.x=p.x-drag.ox;sel.y=p.y-drag.oy;}
+  else if(drag.k==='pinch'&&ptrs.size>=2){
+    const [a,b]=ptrs.values();
+    sel.s=Math.min(5,Math.max(.2,drag.s0*dpx(a,b)/drag.d));
+    sel.r=drag.r0+(ang(a,b)-drag.a0);
+  }
+  render();
+});
+const up=e=>{
+  ptrs.delete(e.pointerId);
+  if(drawing){drawing=false;cur=null;}
+  if(ptrs.size<2&&drag&&drag.k==='pinch')drag=null;
+  if(ptrs.size===0)drag=null;
+};
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+
+// tools
+function setTool(t){
+  tool=t;
+  document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));
+  document.querySelectorAll('.sec').forEach(s=>s.style.display=s.dataset.t===t?'flex':'none');
+  $('panel').style.display='flex';
+}
+document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
+
+// swatches
+function swatches(id,key,apply){
+  const box=$(id);
+  COLORS.forEach(c=>{
+    const b=document.createElement('button');b.className='sw';b.style.background=c;
+    b.onclick=()=>{box.querySelectorAll('.sw').forEach(x=>x.classList.remove('on'));b.classList.add('on');st[key]=c;apply(c);};
+    if(c===st[key])b.classList.add('on');
+    box.appendChild(b);
+  });
+}
+swatches('sw-t','color',c=>{if(sel&&sel.t==='text'){sel.c=c;render();}});
+swatches('sw-d','dc',()=>{});
+
+// text
+$('addt').onclick=()=>{
+  const t=$('txt').value.trim();if(!t||!base)return;
+  addLayer({t:'text',text:t,c:st.color,f:st.font,bg:st.bg,x:.5,y:.4,s:1,r:0});
+  $('txt').value='';
+};
+$('txt').oninput=()=>{if(sel&&sel.t==='text'){sel.text=$('txt').value;render();}};
+$('font').onchange=e=>{st.font=e.target.value;if(sel&&sel.t==='text'){sel.f=st.font;render();}};
+$('bgt').onclick=()=>{
+  st.bg=!st.bg;$('bgt').classList.toggle('on',st.bg);
+  if(sel&&sel.t==='text'){sel.bg=st.bg;render();}
+};
+
+// emoji
+EMOJIS.forEach(em=>{
+  const b=document.createElement('button');b.textContent=em;
+  b.onclick=()=>addLayer({t:'emoji',text:em,x:.5,y:.5,s:1,r:0});
+  $('emo').appendChild(b);
+});
+
+// draw size
+$('dsz').oninput=e=>st.dw=+e.target.value*0.004;
+
+// sticker
+$('sticker').onclick=()=>{if(!base)return;$('fSticker').click();};
+$('fSticker').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  loadFile(f,im=>addLayer({t:'img',img:im,x:.5,y:.5,s:1,r:0}));
+  e.target.value='';
+};
+
+// photo open
+const openBase=f=>{if(f)loadFile(f,setBase);};
+$('open').onclick=$('open2').onclick=()=>$('fBase').click();
+$('cam').onclick=()=>$('fCam').click();
+$('fBase').onchange=e=>{openBase(e.target.files[0]);e.target.value='';};
+$('fCam').onchange=e=>{openBase(e.target.files[0]);e.target.value='';};
+
+// selection controls
+$('sz').oninput=e=>{if(sel){sel.s=+e.target.value;render();}};
+$('del').onclick=()=>{if(!sel)return;snap();layers=layers.filter(l=>l!==sel);sel=null;selUI();render();};
+$('done').onclick=()=>{sel=null;selUI();render();};
+
+// undo
+$('undo').onclick=()=>{if(!hist.length)return;layers=hist.pop();sel=null;selUI();render();};
+
+// filters
+const applyFilt=()=>{filt.b=+$('fB').value;filt.c=+$('fC').value;filt.s=+$('fS').value;render();};
+['fB','fC','fS'].forEach(id=>$(id).oninput=applyFilt);
+const PRESETS={Original:[100,100,100],Vivid:[105,115,150],Mono:[100,110,0],Fade:[110,85,80],Cool:[100,100,85]};
+Object.entries(PRESETS).forEach(([name,[b,c,s]])=>{
+  const btn=document.createElement('button');btn.textContent=name;
+  btn.onclick=()=>{$('fB').value=b;$('fC').value=c;$('fS').value=s;applyFilt();};
+  $('presets').appendChild(btn);
+});
+
+// save / share
+$('save').onclick=()=>{
+  if(!base)return;
+  sel=null;selUI();render(true);
+  cv.toBlob(async blob=>{
+    render();
+    const file=new File([blob],'snap.png',{type:'image/png'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      try{await navigator.share({files:[file]});return;}
+      catch(err){if(err.name==='AbortError')return;}
+    }
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='snap.png';
+    document.body.appendChild(a);a.click();a.remove();
+  },'image/png');
+};
+
+setTool('text');
+</script>
+</body>
+</html>
